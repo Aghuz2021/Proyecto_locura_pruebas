@@ -3,13 +3,10 @@ import os
 
 # Función para conectar a la base de datos
 def conectar_db():
-    # Asegurar que el directorio existe
     if not os.path.exists("database"):
         os.makedirs("database")
-    
-    # Conexión a la base de datos (clientes de gimnasio)
-    conn = sqlite3.connect("database/clientes.db")
-    conn.row_factory = sqlite3.Row  # Configurar filas como diccionarios
+    conn = sqlite3.connect("database/clientes22.db")
+    conn.row_factory = sqlite3.Row
     return conn
 
 # Función para crear tablas y triggers
@@ -17,103 +14,124 @@ def crear_tablas():
     conn = conectar_db()
     cursor = conn.cursor()
 
-    # Crear tabla Clientes
+    # Tabla Clientes
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Clientes (
             ClienteID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Nombre TEXT,
-            Apellido TEXT,
-            Telefono TEXT,
-            Telefono_Opcional TEXT,
-            Correo TEXT,
-            DNI TEXT,
-            fecha_nacimiento TEXT,
+            Nombre TEXT NOT NULL,
+            Apellido TEXT NOT NULL,
+            Telefono TEXT NOT NULL,
+            Telefono_opcional TEXT,
+            correo TEXT,
+            Dni TEXT NOT NULL,
+            fecha_nacimiento DATE,
             sexo TEXT NOT NULL CHECK (sexo IN ('Masculino', 'Femenino', 'Otro')),
+            Estado TEXT DEFAULT 'Activo',
+            fecha_creacion TEXT DEFAULT (DATE('now')),
             Tipo TEXT DEFAULT 'Cliente',
-            FechaCreacion TEXT DEFAULT (DATE('now')),
-            estado TEXT DEFAULT 'Activo',
-            day_inactivo INTEGER DEFAULT 0
+            Day_inactivo INTEGER DEFAULT 0
         )
     ''')
 
-    # Crear tabla Productos
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS Productos (
-            ProductoID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Nombre TEXT,
-            Tipo TEXT DEFAULT 'Producto',
-            stock INTEGER
-        )
-    ''')
-
-    # Crear tabla Pagos
+    # Tabla Pagos
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS Pagos (
             PagoID INTEGER PRIMARY KEY AUTOINCREMENT,
             ClienteID INTEGER,
-            FechaPago TEXT NOT NULL,
-            FechaVencimiento TEXT,
+            Metodo TEXT CHECK (Metodo IN ('Efectivo', 'Transferencia', 'Debito')),
+            FechaPago DATE NOT NULL,
+            FechaVencimiento DATE,
             Monto INTEGER,
-            FOREIGN KEY (ClienteID) REFERENCES Clientes(ClienteID)
+            MesesPagados INTEGER,
+            Tipo_membresia TEXT CHECK (Tipo_membresia IN ('Pago inicial', 'Renovación')),
+            FOREIGN KEY (ClienteID) REFERENCES Clientes (ClienteID)
         )
     ''')
 
-    # Crear tabla productos_pagos
+    # Trigger para calcular FechaVencimiento según MesesPagados
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS productos_pagos (
-            Pago_productoID INTEGER PRIMARY KEY AUTOINCREMENT,
-            ProductoID INTEGER,
-            FechaPago TEXT NOT NULL,
-            Monto INTEGER,
-            FOREIGN KEY (ProductoID) REFERENCES Productos(ProductoID)
-        )
-    ''')
-
-    # Crear trigger Trg_ActualizarEstado
-    cursor.execute('''
-        CREATE TRIGGER IF NOT EXISTS Trg_ActualizarEstado
+        CREATE TRIGGER IF NOT EXISTS calcular_fecha_vencimiento
         AFTER INSERT ON Pagos
+        FOR EACH ROW
         BEGIN
-            -- Si el cliente no tiene pagos no vencidos, actualizar su estado a 'Inactivo'
-            UPDATE Clientes
-            SET estado = 'Inactivo',
-                day_inactivo = (
-                    SELECT MAX(
-                        julianday('now') - julianday(COALESCE(FechaVencimiento, DATE(FechaPago, '+1 month')))
-                    )
-                    FROM Pagos
-                    WHERE ClienteID = NEW.ClienteID
-                )
-            WHERE ClienteID = NEW.ClienteID
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM Pagos
-                  WHERE ClienteID = NEW.ClienteID
-                    AND COALESCE(FechaVencimiento, DATE(FechaPago, '+1 month')) >= DATE('now')
-              );
-
-            -- Si el cliente tiene pagos no vencidos, actualizar su estado a 'Activo'
-            UPDATE Clientes
-            SET estado = 'Activo',
-                day_inactivo = 0
-            WHERE ClienteID = NEW.ClienteID
-              AND EXISTS (
-                  SELECT 1
-                  FROM Pagos
-                  WHERE ClienteID = NEW.ClienteID
-                    AND COALESCE(FechaVencimiento, DATE(FechaPago, '+1 month')) >= DATE('now')
-              );
+            UPDATE Pagos
+            SET FechaVencimiento = 
+                CASE
+                    WHEN NEW.MesesPagados BETWEEN 1 AND 12
+                    THEN date(NEW.FechaPago, '+' || NEW.MesesPagados || ' months')
+                    ELSE NEW.FechaPago
+                END
+            WHERE PagoID = NEW.PagoID;
         END;
     ''')
 
-    # Crear trigger Trg_AutomaticFechaVencimiento
+    # Trigger para actualizar estado y días inactivos después de insertar un pago
     cursor.execute('''
-        CREATE TRIGGER IF NOT EXISTS Trg_AutomaticFechaVencimiento
+        CREATE TRIGGER IF NOT EXISTS trg_actualizar_estado_despues_insert
         AFTER INSERT ON Pagos
+        FOR EACH ROW
         BEGIN
-            UPDATE Pagos
-            SET FechaVencimiento = DATE(FechaPago, '+1 month')
-            WHERE PagoID = NEW.PagoID;
+            UPDATE Clientes
+            SET 
+                Estado = CASE 
+                            WHEN (
+                                SELECT MAX(FechaVencimiento)
+                                FROM Pagos
+                                WHERE ClienteID = NEW.ClienteID
+                            ) < DATE('now') THEN 'Inactivo'
+                            ELSE 'Activo'
+                        END,
+                Day_inactivo = CASE 
+                                WHEN (
+                                    SELECT MAX(FechaVencimiento)
+                                    FROM Pagos
+                                    WHERE ClienteID = NEW.ClienteID
+                                ) < DATE('now') THEN
+                                    CAST(
+                                        JULIANDAY('now') - JULIANDAY((
+                                            SELECT MAX(FechaVencimiento)
+                                            FROM Pagos
+                                            WHERE ClienteID = NEW.ClienteID
+                                        )) AS INTEGER
+                                    )
+                                ELSE 0
+                              END
+            WHERE ClienteID = NEW.ClienteID;
+        END;
+    ''')
+
+    # Trigger para actualizar estado y días inactivos después de actualizar un pago
+    cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS trg_actualizar_estado_despues_update
+        AFTER UPDATE ON Pagos
+        FOR EACH ROW
+        BEGIN
+            UPDATE Clientes
+            SET 
+                Estado = CASE 
+                            WHEN (
+                                SELECT MAX(FechaVencimiento)
+                                FROM Pagos
+                                WHERE ClienteID = NEW.ClienteID
+                            ) < DATE('now') THEN 'Inactivo'
+                            ELSE 'Activo'
+                        END,
+                Day_inactivo = CASE 
+                                WHEN (
+                                    SELECT MAX(FechaVencimiento)
+                                    FROM Pagos
+                                    WHERE ClienteID = NEW.ClienteID
+                                ) < DATE('now') THEN
+                                    CAST(
+                                        JULIANDAY('now') - JULIANDAY((
+                                            SELECT MAX(FechaVencimiento)
+                                            FROM Pagos
+                                            WHERE ClienteID = NEW.ClienteID
+                                        )) AS INTEGER
+                                    )
+                                ELSE 0
+                              END
+            WHERE ClienteID = NEW.ClienteID;
         END;
     ''')
 

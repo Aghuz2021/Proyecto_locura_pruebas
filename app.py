@@ -20,6 +20,7 @@ def main(page: ft.Page):
         }
         if route in vistas:
             vistas[route](page)  # Carga la vista correspondiente
+            
         else:
             page.add(ft.Text("Página no encontrada", size=24, weight="bold"))
         page.update()  # Actualiza la página para reflejar los cambios
